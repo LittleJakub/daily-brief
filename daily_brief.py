@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-daily-brief v1.0.0
+daily-brief v1.1.0
 Morning and evening personal briefings via Telegram.
 Usage: python3 daily_brief.py [morning|evening]
 """
@@ -13,13 +13,14 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 import logging
+import re
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-HOME          = Path.home()
-SKILL_DIR     = HOME / ".openclaw/agents/main/workspace/skills/daily-brief"
-CONFIG_PATH   = HOME / ".openclaw/config/daily-brief/config.json"
-SECRETS_PATH  = HOME / ".openclaw/shared/secrets/openclaw-secrets.env"
-LOG_PATH      = SKILL_DIR / "daily-brief.log"
+HOME        = Path.home()
+SKILL_DIR   = HOME / ".openclaw/agents/main/workspace/skills/daily-brief"
+CONFIG_PATH = HOME / ".openclaw/config/daily-brief/config.json"
+SECRETS_PATH = HOME / ".openclaw/shared/secrets/openclaw-secrets.env"
+LOG_PATH    = SKILL_DIR / "daily-brief.log"
 
 logging.basicConfig(
     filename=str(LOG_PATH),
@@ -49,12 +50,17 @@ def load_secrets() -> dict:
     return secrets
 
 
-# ── HTTP helper ────────────────────────────────────────────────────────────────
+# ── HTTP helpers ───────────────────────────────────────────────────────────────
 
 def http_get_json(url: str, headers: Optional[dict] = None) -> dict:
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode())
+
+def http_get_text(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "daily-brief/1.1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
 
 # ── Weather ────────────────────────────────────────────────────────────────────
@@ -109,6 +115,261 @@ def fetch_weather(cfg: dict, secrets: dict, target: str = "today") -> str:
     return line
 
 
+# ── ICS calendar ───────────────────────────────────────────────────────────────
+
+def _ics_unescape(val: str) -> str:
+    """Unescape iCalendar text values."""
+    return val.replace("\\n", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")
+
+def _unfold_ics(text: str) -> list:
+    """
+    Unfold iCalendar lines (RFC 5545 §3.1):
+    a CRLF followed by a whitespace character is a line continuation.
+    Returns a list of unfolded lines.
+    """
+    lines = []
+    for raw in text.splitlines():
+        if raw and raw[0] in (" ", "\t") and lines:
+            lines[-1] += raw[1:]
+        else:
+            lines.append(raw)
+    return lines
+
+def _parse_ics_datetime(val: str, tzid: Optional[str] = None) -> Optional[date]:
+    """
+    Parse an iCal DTSTART/DTEND value to a Python date.
+    Handles:
+      - DATE-only:      19970714          → date(1997,7,14)
+      - DATE-TIME:      19980118T230000   → naive datetime → .date()
+      - DATE-TIME UTC:  19980119T070000Z  → strip Z, use as-is
+    We do not do full tz conversion — we work in local wall time since
+    the machine runs in the correct timezone already.
+    """
+    val = val.strip().rstrip("Z")
+    if "T" in val:
+        try:
+            return datetime.strptime(val[:15], "%Y%m%dT%H%M%S").date()
+        except ValueError:
+            return None
+    else:
+        try:
+            return datetime.strptime(val[:8], "%Y%m%d").date()
+        except ValueError:
+            return None
+
+def _parse_ics_datetime_full(val: str) -> Optional[datetime]:
+    """Parse to full datetime for time display."""
+    val = val.strip().rstrip("Z")
+    if "T" in val:
+        try:
+            return datetime.strptime(val[:15], "%Y%m%dT%H%M%S")
+        except ValueError:
+            return None
+    return None
+
+def _rrule_matches(rrule: str, dtstart_date: date, check_date: date) -> bool:
+    """
+    Check if an RRULE causes an event to recur on check_date.
+    Supports FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with optional INTERVAL.
+    Does not implement UNTIL/COUNT/BYDAY etc — good enough for personal calendars.
+    """
+    if check_date < dtstart_date:
+        return False
+    params = {}
+    for part in rrule.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            params[k.strip().upper()] = v.strip()
+
+    freq     = params.get("FREQ", "")
+    interval = int(params.get("INTERVAL", "1"))
+    delta    = check_date - dtstart_date
+
+    if freq == "DAILY":
+        return delta.days % interval == 0
+    elif freq == "WEEKLY":
+        return delta.days % (7 * interval) == 0
+    elif freq == "MONTHLY":
+        months = (check_date.year - dtstart_date.year) * 12 + (check_date.month - dtstart_date.month)
+        return months % interval == 0 and check_date.day == dtstart_date.day
+    elif freq == "YEARLY":
+        years = check_date.year - dtstart_date.year
+        return years % interval == 0 and check_date.month == dtstart_date.month and check_date.day == dtstart_date.day
+    return False
+
+def _is_all_day(dtstart_raw: str) -> bool:
+    """Return True if the DTSTART value is a DATE (not DATE-TIME)."""
+    return "T" not in dtstart_raw.strip()
+
+def parse_ics(text: str, target_date: date) -> list:
+    """
+    Parse an iCalendar string and return events occurring on target_date.
+    Each event is a dict:
+      summary   str
+      location  str | None
+      all_day   bool
+      start_dt  datetime | None  (None for all-day)
+      end_dt    datetime | None
+    """
+    lines    = _unfold_ics(text)
+    events   = []
+    in_event = False
+    current  = {}
+
+    for line in lines:
+        if line.strip() == "BEGIN:VEVENT":
+            in_event = True
+            current  = {}
+            continue
+        if line.strip() == "END:VEVENT":
+            in_event = False
+            if current:
+                events.append(current)
+            current = {}
+            continue
+        if not in_event:
+            continue
+
+        # Split property name (and params) from value
+        if ":" not in line:
+            continue
+        prop, _, val = line.partition(":")
+        prop_name = prop.split(";")[0].upper()
+
+        # Extract TZID param if present
+        tzid = None
+        for param in prop.split(";")[1:]:
+            if param.upper().startswith("TZID="):
+                tzid = param[5:]
+
+        if prop_name == "SUMMARY":
+            current["summary"] = _ics_unescape(val.strip())
+        elif prop_name == "LOCATION":
+            current["location"] = _ics_unescape(val.strip())
+        elif prop_name == "DTSTART":
+            current["dtstart_raw"] = val.strip()
+            current["dtstart_date"] = _parse_ics_datetime(val, tzid)
+            current["dtstart_dt"]   = _parse_ics_datetime_full(val)
+        elif prop_name == "DTEND":
+            current["dtend_date"] = _parse_ics_datetime(val, tzid)
+            current["dtend_dt"]   = _parse_ics_datetime_full(val)
+        elif prop_name == "RRULE":
+            current["rrule"] = val.strip()
+        elif prop_name == "STATUS":
+            current["status"] = val.strip().upper()
+
+    # Filter to target_date
+    result = []
+    for ev in events:
+        # Skip cancelled events
+        if ev.get("status") == "CANCELLED":
+            continue
+
+        dtstart_d = ev.get("dtstart_date")
+        dtend_d   = ev.get("dtend_date")
+        rrule     = ev.get("rrule")
+
+        if not dtstart_d:
+            continue
+
+        # Check if event falls on target_date
+        occurs = False
+        if rrule:
+            occurs = _rrule_matches(rrule, dtstart_d, target_date)
+        elif dtend_d and dtend_d > dtstart_d + timedelta(days=1):
+            # Multi-day event: spans target_date?
+            occurs = dtstart_d <= target_date < dtend_d
+        else:
+            occurs = dtstart_d == target_date
+
+        if occurs:
+            all_day  = _is_all_day(ev.get("dtstart_raw", ""))
+            start_dt = None if all_day else ev.get("dtstart_dt")
+            end_dt   = None if all_day else ev.get("dtend_dt")
+            result.append({
+                "summary":  ev.get("summary", "(no title)"),
+                "location": ev.get("location"),
+                "all_day":  all_day,
+                "start_dt": start_dt,
+                "end_dt":   end_dt,
+            })
+
+    # Sort: all-day first, then by start time
+    result.sort(key=lambda e: (
+        0 if e["all_day"] else 1,
+        e["start_dt"] or datetime.min,
+    ))
+    return result
+
+
+def fetch_calendar_events(cfg: dict, secrets: dict, target_date: date) -> list:
+    """
+    Fetch events from all configured ICS calendars for target_date.
+    Returns list of dicts with added 'calendar_label' key.
+    Each calendar entry in config has:
+      label           – display name
+      ics_secret_key  – key to look up in secrets for the URL
+    """
+    cal_cfg = cfg.get("calendar", {})
+    if not cal_cfg.get("enabled", False):
+        return []
+
+    calendars = cal_cfg.get("calendars", [])
+    all_events = []
+
+    for cal in calendars:
+        label     = cal.get("label", "Calendar")
+        secret_key = cal.get("ics_secret_key", "")
+        url       = secrets.get(secret_key, "")
+
+        if not url:
+            log.warning(f"ICS URL not found in secrets for key '{secret_key}' (calendar: {label})")
+            continue
+
+        try:
+            text   = http_get_text(url)
+            events = parse_ics(text, target_date)
+            for ev in events:
+                ev["calendar_label"] = label
+            all_events.extend(events)
+            log.info(f"Calendar '{label}': {len(events)} event(s) on {target_date}")
+        except Exception as e:
+            log.warning(f"Calendar '{label}' fetch/parse failed: {e}")
+
+    # Re-sort across all calendars: all-day first, then by time
+    all_events.sort(key=lambda e: (
+        0 if e["all_day"] else 1,
+        e["start_dt"] or datetime.min,
+    ))
+    return all_events
+
+
+def format_calendar(events: list, day: str = "today") -> str:
+    """
+    Format calendar events for a briefing section.
+    day: 'today' | 'tomorrow'
+    """
+    label = "Today" if day == "today" else "Tomorrow"
+
+    if not events:
+        return f"📅 <b>{label}'s calendar:</b> Nothing scheduled."
+
+    lines = [f"📅 <b>{label}'s calendar:</b>"]
+    for ev in events:
+        cal_tag = f" <i>[{ev['calendar_label']}]</i>" if ev.get("calendar_label") else ""
+        loc     = f" 📍 {ev['location']}" if ev.get("location") else ""
+
+        if ev["all_day"]:
+            lines.append(f"   🗓️ {ev['summary']}{loc}{cal_tag}")
+        else:
+            start = ev["start_dt"].strftime("%H:%M") if ev["start_dt"] else "?"
+            end   = ev["end_dt"].strftime("%H:%M")   if ev["end_dt"]   else ""
+            time_str = f"{start}–{end}" if end else start
+            lines.append(f"   🕐 {time_str}  {ev['summary']}{loc}{cal_tag}")
+
+    return "\n".join(lines)
+
+
 # ── Todoist ────────────────────────────────────────────────────────────────────
 
 def fetch_todoist(secrets: dict, horizon_days: int = 0) -> list:
@@ -129,7 +390,7 @@ def fetch_todoist(secrets: dict, horizon_days: int = 0) -> list:
         log.warning(f"Todoist fetch failed: {e}")
         return []
 
-    raw = data.get("results", data) if isinstance(data, dict) else data
+    raw    = data.get("results", data) if isinstance(data, dict) else data
     today  = date.today()
     cutoff = today + timedelta(days=horizon_days)
 
@@ -159,9 +420,9 @@ def _prio_icon(priority: int) -> str:
 
 
 def format_todoist_morning(tasks: list) -> str:
-    today    = date.today()
-    overdue  = [t for t in tasks if t["due_date"] < today  and not t["is_completed"]]
-    due_now  = [t for t in tasks if t["due_date"] == today and not t["is_completed"]]
+    today   = date.today()
+    overdue = [t for t in tasks if t["due_date"] < today  and not t["is_completed"]]
+    due_now = [t for t in tasks if t["due_date"] == today and not t["is_completed"]]
 
     if not overdue and not due_now:
         return "✅ <b>Tasks:</b> Nothing due today — clear runway!"
@@ -223,8 +484,8 @@ _DATE_KEYS = {
 
 def _parse_date(val: str) -> Optional[date]:
     """
-    Parse a date string. Supports YYYY-MM-DD and month-day (MM-DD).
-    Year-agnostic dates are mapped to the current or next occurrence.
+    Parse a date string. Supports YYYY-MM-DD and MM-DD.
+    Year-agnostic dates map to the current or next occurrence.
     """
     for fmt in ("%Y-%m-%d", "%m-%d"):
         try:
@@ -241,11 +502,6 @@ def _parse_date(val: str) -> Optional[date]:
 
 
 def scan_ledger(ledger_path: Path, window_days: int) -> list:
-    """
-    Scan the life-ledger JSON for upcoming dates within window_days.
-    Returns a list of alert dicts. Reads the path passed by the caller
-    (resolved from config so the caller can check existence first).
-    """
     if not ledger_path.exists():
         return []
     try:
@@ -263,24 +519,14 @@ def scan_ledger(ledger_path: Path, window_days: int) -> list:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        label = (
-            entry.get("name") or entry.get("title") or
-            entry.get("label") or "Entry"
-        )
-        # Scan top-level keys
+        label = entry.get("name") or entry.get("title") or entry.get("label") or "Entry"
         for key, val in entry.items():
             if not isinstance(val, str):
                 continue
             if key.lower() in _DATE_KEYS or "date" in key.lower():
                 d = _parse_date(val)
                 if d and today <= d <= cutoff:
-                    alerts.append({
-                        "label": label,
-                        "key":   key,
-                        "date":  d,
-                        "delta": (d - today).days,
-                    })
-        # Scan notes for keyword-prefixed dates
+                    alerts.append({"label": label, "key": key, "date": d, "delta": (d - today).days})
         for note in entry.get("notes", []):
             if not isinstance(note, dict):
                 continue
@@ -289,13 +535,8 @@ def scan_ledger(ledger_path: Path, window_days: int) -> list:
                 for word in text.split():
                     d = _parse_date(word)
                     if d and today <= d <= cutoff:
-                        alerts.append({
-                            "label": label,
-                            "key":   "note",
-                            "date":  d,
-                            "delta": (d - today).days,
-                            "text":  text,
-                        })
+                        alerts.append({"label": label, "key": "note", "date": d,
+                                       "delta": (d - today).days, "text": text})
 
     alerts.sort(key=lambda x: x["date"])
     return alerts
@@ -306,31 +547,20 @@ def format_ledger_alerts(alerts: list) -> str:
         return ""
     lines = ["🗂️ <b>Life-ledger reminders:</b>"]
     for a in alerts:
-        if a["delta"] == 0:
-            when = "today"
-        elif a["delta"] == 1:
-            when = "tomorrow"
-        else:
-            when = f"in {a['delta']} days"
+        when     = "today" if a["delta"] == 0 else ("tomorrow" if a["delta"] == 1 else f"in {a['delta']} days")
         date_str = a["date"].strftime("%-d %b")
         if "text" in a:
             lines.append(f"   📌 {a['label']}: {a['text'][:60]} ({when})")
         else:
-            key_label = a["key"].replace("_", " ")
-            lines.append(f"   📌 {a['label']} — {key_label} {when} ({date_str})")
+            lines.append(f"   📌 {a['label']} — {a['key'].replace('_', ' ')} {when} ({date_str})")
     return "\n".join(lines)
 
 
 # ── Pulse-board rig status ─────────────────────────────────────────────────────
 
 def rig_status_line(pulse_delivered_path: Path) -> str:
-    """
-    One-liner rig health check based on pulse-board's last-delivered.md.
-    Path is passed from config so the caller can gate on pulse_board_enabled.
-    """
     if not pulse_delivered_path:
-        return ""  # pulse-board not configured — omit section silently
-
+        return ""
     try:
         if not pulse_delivered_path.exists():
             return "🔧 <b>Rig:</b> pulse-board installed but no delivery record yet"
@@ -353,13 +583,6 @@ def rig_status_line(pulse_delivered_path: Path) -> str:
         return "❓ <b>Rig:</b> status unknown"
 
 
-# ── Calendar placeholder ───────────────────────────────────────────────────────
-
-def calendar_placeholder(day: str = "today") -> str:
-    label = "Today" if day == "today" else "Tomorrow"
-    return f"📅 <b>{label}'s calendar:</b> <i>not yet connected (v1.1)</i>"
-
-
 # ── Telegram ───────────────────────────────────────────────────────────────────
 
 def send_telegram(text: str, cfg: dict, secrets: dict) -> bool:
@@ -372,9 +595,9 @@ def send_telegram(text: str, cfg: dict, secrets: dict) -> bool:
     thread_id = cfg["telegram"].get("thread_id")
 
     payload = {
-        "chat_id":                 chat_id,
-        "text":                    text,
-        "parse_mode":              "HTML",
+        "chat_id":                  chat_id,
+        "text":                     text,
+        "parse_mode":               "HTML",
         "disable_web_page_preview": True,
     }
     if thread_id:
@@ -401,30 +624,25 @@ def send_telegram(text: str, cfg: dict, secrets: dict) -> bool:
         return False
 
 
-# ── Briefing builders ──────────────────────────────────────────────────────────
+# ── Path resolution ────────────────────────────────────────────────────────────
 
 def _resolve_paths(cfg: dict) -> dict:
-    """
-    Resolve optional external paths from config.
-    Returns a dict of Path objects (or None) so briefing functions
-    don't have to know about config structure.
-    """
     ledger_raw = cfg.get("life_ledger", {}).get("path")
     ledger_path = Path(ledger_raw).expanduser() if ledger_raw else None
 
-    pulse_raw = cfg.get("pulse_board", {}).get("last_delivered_path")
+    pulse_raw  = cfg.get("pulse_board", {}).get("last_delivered_path")
     pulse_path = Path(pulse_raw).expanduser() if pulse_raw else None
 
-    return {
-        "ledger": ledger_path,
-        "pulse":  pulse_path,
-    }
+    return {"ledger": ledger_path, "pulse": pulse_path}
 
+
+# ── Briefing builders ──────────────────────────────────────────────────────────
 
 def morning_briefing(cfg: dict, secrets: dict) -> str:
     paths    = _resolve_paths(cfg)
     now      = datetime.now()
     date_str = now.strftime("%A, %-d %B %Y")
+    today    = date.today()
     sections = [f"🌅 <b>Good morning, Jakub!</b>\n{date_str}\n"]
 
     # Weather — today
@@ -434,8 +652,13 @@ def morning_briefing(cfg: dict, secrets: dict) -> str:
         log.warning(f"Weather section failed: {e}")
         sections.append("⚠️ Weather: unavailable")
 
-    # Calendar — v1.1 placeholder
-    sections.append(calendar_placeholder("today"))
+    # Calendar — today
+    try:
+        events = fetch_calendar_events(cfg, secrets, today)
+        sections.append(format_calendar(events, "today"))
+    except Exception as e:
+        log.warning(f"Calendar section failed: {e}")
+        sections.append("⚠️ Calendar: unavailable")
 
     # Todoist — overdue + due today
     try:
@@ -455,7 +678,7 @@ def morning_briefing(cfg: dict, secrets: dict) -> str:
         except Exception as e:
             log.warning(f"Ledger section failed: {e}")
 
-    # Rig status (one-liner from pulse-board)
+    # Rig status
     if paths["pulse"]:
         line = rig_status_line(paths["pulse"])
         if line:
@@ -465,13 +688,19 @@ def morning_briefing(cfg: dict, secrets: dict) -> str:
 
 
 def evening_briefing(cfg: dict, secrets: dict) -> str:
-    paths    = _resolve_paths(cfg)
-    now      = datetime.now()
-    date_str = now.strftime("%A, %-d %B %Y")
-    sections = [f"🌆 <b>Evening briefing</b>\n{date_str}\n"]
+    paths     = _resolve_paths(cfg)
+    now       = datetime.now()
+    date_str  = now.strftime("%A, %-d %B %Y")
+    tomorrow  = date.today() + timedelta(days=1)
+    sections  = [f"🌆 <b>Evening briefing</b>\n{date_str}\n"]
 
-    # Calendar — tomorrow, v1.1 placeholder
-    sections.append(calendar_placeholder("tomorrow"))
+    # Calendar — tomorrow
+    try:
+        events = fetch_calendar_events(cfg, secrets, tomorrow)
+        sections.append(format_calendar(events, "tomorrow"))
+    except Exception as e:
+        log.warning(f"Calendar section failed: {e}")
+        sections.append("⚠️ Calendar: unavailable")
 
     # Weather — tomorrow
     try:
@@ -490,7 +719,7 @@ def evening_briefing(cfg: dict, secrets: dict) -> str:
 
     # Todoist — upcoming horizon
     try:
-        horizon = cfg.get("alert_window_days", 7)
+        horizon   = cfg.get("alert_window_days", 7)
         tasks_all = fetch_todoist(secrets, horizon_days=horizon)
         sections.append(format_todoist_horizon(tasks_all, horizon))
     except Exception as e:
@@ -505,9 +734,6 @@ def evening_briefing(cfg: dict, secrets: dict) -> str:
                 sections.append(alert_text)
         except Exception as e:
             log.warning(f"Ledger section failed: {e}")
-
-    # v1.1 hook: prep reminders (needs calendar data)
-    # sections.append(_prep_reminders(tomorrow_events))
 
     return "\n\n".join(sections)
 

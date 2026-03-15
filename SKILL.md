@@ -1,36 +1,34 @@
 # daily-brief
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Location:** `~/.openclaw/agents/main/workspace/skills/daily-brief/`
 
 ---
 
 ## What it does
 
-`daily-brief` posts two personal briefings to a dedicated Telegram topic each day — a morning edition to start the day, and an evening edition to close it out. This is a **personal day planner**, entirely separate from pulse-board (which handles system health in the exOskeleton thread).
+`daily-brief` posts two personal briefings to a dedicated Telegram topic each day — a morning edition to start the day, and an evening edition to close it out. Personal day planner, not a system health monitor (that's pulse-board).
 
 ---
 
-## Morning briefing — 06:00 Asia/Shanghai
+## Morning briefing — 06:00
 
 | Section | Source | Required |
 |---|---|---|
 | Weather today | OpenWeatherMap | `OPENWEATHER_API_KEY` |
-| Today's calendar | 📅 *v1.1 placeholder* | — |
+| Today's calendar | ICS feeds | configured in setup |
 | Tasks due today + overdue | Todoist REST API v1 | `TODOIST_API_TOKEN` |
 | Life-ledger reminders (7-day window) | `ledger.json` | configured in setup |
 | Rig status (one-liner) | pulse-board `last-delivered.md` | configured in setup |
 
----
-
-## Evening briefing — 21:00 Asia/Shanghai
+## Evening briefing — 21:00
 
 | Section | Source | Required |
 |---|---|---|
-| Tomorrow's calendar | 📅 *v1.1 placeholder* | — |
+| Tomorrow's calendar | ICS feeds | configured in setup |
 | Weather tomorrow | OpenWeatherMap | `OPENWEATHER_API_KEY` |
 | Unfinished items from today | Todoist REST API v1 | `TODOIST_API_TOKEN` |
-| 7-day horizon (tasks + dates) | Todoist + life-ledger | — |
+| 7-day task + date horizon | Todoist + life-ledger | — |
 | Life-ledger reminders | `ledger.json` | configured in setup |
 
 ---
@@ -42,19 +40,31 @@ python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py morn
 python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py evening
 ```
 
-Prints the briefing to stdout and sends to Telegram. Use for testing before the first cron run.
-
 ---
 
-## Required environment variables
+## Required secrets
 
 All stored in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
 
 | Variable | Description |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token (shared with other skills) |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `TODOIST_API_TOKEN` | Todoist REST API token (shared with task-bridge) |
-| `OPENWEATHER_API_KEY` | OpenWeatherMap API key — free tier at openweathermap.org (1000 calls/day). **Note: new keys can take up to 2 hours to activate after signup.** |
+| `OPENWEATHER_API_KEY` | OpenWeatherMap API key (free tier — new keys take up to 2h to activate) |
+| `DAILY_BRIEF_ICS_*` | One entry per calendar, key name is up to you |
+
+---
+
+## Calendar — ICS feeds
+
+daily-brief fetches calendar events from standard ICS (iCalendar) URLs. These work with any calendar service that can publish a shareable ICS link:
+
+- **Outlook.com (personal):** Settings → View all Outlook settings → Calendar → Shared calendars → Publish a calendar → Can view all details → Publish → copy **ICS** link
+- **Office 365 (work/school):** Same flow at `outlook.office.com` (requires IT to have external publishing enabled)
+- **Google Calendar:** Calendar settings → [calendar name] → Integrate calendar → Secret address in iCal format
+- **iCloud:** Calendar → share → Public Calendar → copy link (change `webcal://` to `https://`)
+
+**ICS URLs are treated as secrets** — they give read access to your calendar to anyone who has them. They are stored in `openclaw-secrets.env`, never in `config.json`. Config only stores the secret key name.
 
 ---
 
@@ -66,12 +76,19 @@ All stored in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
 {
   "telegram": {
     "chat_id": -1001234567890,
-    "thread_id": 123
+    "thread_id": 99
   },
   "weather": {
     "lat": 0.0000,
     "lon": 0.0000,
     "city_name": "Your City"
+  },
+  "calendar": {
+    "enabled": true,
+    "calendars": [
+      {"label": "Personal", "ics_secret_key": "DAILY_BRIEF_ICS_PERSONAL"},
+      {"label": "Work",     "ics_secret_key": "DAILY_BRIEF_ICS_WORK"}
+    ]
   },
   "life_ledger": {
     "enabled": true,
@@ -81,57 +98,33 @@ All stored in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
     "enabled": true,
     "last_delivered_path": "/home/USER/.openclaw/agents/main/workspace/skills/pulse-board/last-delivered.md"
   },
-  "calendar": {
-    "enabled": false,
-    "note": "v1.1 — ICS URL method planned",
-    "ics_url": null
-  },
   "alert_window_days": 7
 }
 ```
 
 **Field notes:**
 
-- `telegram.thread_id` — the `message_thread_id` of the daily-brief topic. Set after creating the topic in Telegram. Messages go to the main group chat if null.
-- `life_ledger.enabled` — set to `false` if life-ledger is not installed; reminders section is omitted entirely.
-- `pulse_board.enabled` — set to `false` if pulse-board is not installed; rig status line is omitted entirely.
-- `calendar.ics_url` — null in v1.0. v1.1 will read an ICS URL published from Outlook.com or your work calendar.
+- `telegram.thread_id` — the `message_thread_id` of the daily-brief topic. Messages go to main group chat if null.
+- `calendar.calendars` — list of calendars. Add as many as needed. Each entry needs a `label` (display name) and an `ics_secret_key` (the variable name to look up in `openclaw-secrets.env`).
+- `life_ledger.enabled` — set false if life-ledger not installed; section omitted entirely.
+- `pulse_board.enabled` — set false if pulse-board not installed; section omitted entirely.
 - `alert_window_days` — how many days ahead to scan for life-ledger dates and Todoist horizon tasks.
 
 ---
 
 ## Life-ledger scanning
 
-daily-brief reads `ledger.json` but **never writes to it**. It scans all entries for:
-
+daily-brief reads `ledger.json` but **never writes to it**. Scans all entries for:
 - Keys named `birthday`, `born`, `anniversary`, `contract_end`, `appointment`, `deadline`, `expires`, `renewal`, `reminder`, `date`, or any key containing "date"
 - Notes containing `reminder:`, `remind:`, `birthday:`, or `due:` followed by a date
 
-Dates without a year (e.g. `"09-15"` for a birthday) are interpreted as the current or next occurrence.
-
----
-
-## Calendar (v1.1 roadmap)
-
-Calendar sections are placeholders in v1.0. The hook exists in the code (`calendar_placeholder()`).
-
-**v1.1 plan:** ICS URL export from Outlook.com.
-
-- Microsoft Graph API is not viable for personal accounts — app registration outside a directory was deprecated in June 2024 and now requires an Azure subscription.
-- ICS export requires no auth, no app registration, and works for both personal Outlook.com and work Microsoft 365 calendars (subject to IT publishing policy for the latter).
-
-**To prepare for v1.1:**
-1. In Outlook.com → Settings → View all Outlook settings → Calendar → Shared calendars → Publish a calendar
-2. Select the calendar, choose "Can view all details", click Publish
-3. Copy the ICS link
-4. Set `calendar.ics_url` in config.json
-5. Set `calendar.enabled` to `true`
+Dates without a year (e.g. `"09-15"`) are interpreted as the current or next occurrence.
 
 ---
 
 ## Section degradation
 
-Every section is wrapped in independent try/except. If weather is down, tasks and reminders still appear. If Todoist is unreachable, the rest of the briefing still sends. Errors are written to `daily-brief.log`, not surfaced in the Telegram message.
+Every section is wrapped in an independent try/except. If one data source fails, the rest of the briefing still sends. Errors go to `daily-brief.log`, not into the Telegram message.
 
 ---
 
@@ -143,13 +136,11 @@ Every section is wrapped in independent try/except. If weather is down, tasks an
 
 ## Cron
 
-Installed by `setup.py`. Verify with:
-
 ```bash
 crontab -l | grep daily-brief
 ```
 
-The crontab includes a `PATH=` line with `~/.npm-global/bin` so `openclaw` resolves correctly in the cron environment (same pattern as pulse-board v1.1.4).
+The crontab includes a `PATH=` line with `~/.npm-global/bin` so `openclaw` resolves correctly in cron context.
 
 ---
 
@@ -157,6 +148,6 @@ The crontab includes a `PATH=` line with `~/.npm-global/bin` so `openclaw` resol
 
 | Skill | Relationship |
 |---|---|
-| `pulse-board` | Separate skill — system health. daily-brief reads its `last-delivered.md` for the rig status one-liner only. |
+| `pulse-board` | Separate skill — system health. daily-brief reads `last-delivered.md` for the rig one-liner only. |
 | `task-bridge` | Shares `TODOIST_API_TOKEN` |
 | `life-ledger` | daily-brief reads `ledger.json` — read-only |
