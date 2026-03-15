@@ -1,4 +1,4 @@
-# daily-brief
+# Daily Brief
 
 An [OpenClaw](https://github.com/LittleJakub) skill that posts a morning and evening personal briefing to a Telegram topic — weather, calendar events, tasks, life reminders, and a rig health check.
 
