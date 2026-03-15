@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-daily-brief v1.2.0
+daily-brief v1.3.0
 Morning and evening personal briefings via configurable channel (Feishu or Telegram).
 Usage: python3 daily_brief.py [morning|evening]
 """
@@ -58,7 +58,7 @@ def http_get_json(url: str, headers: Optional[dict] = None) -> dict:
         return json.loads(resp.read().decode())
 
 def http_get_text(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "daily-brief/1.2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "daily-brief/1.3.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -783,6 +783,68 @@ def morning_briefing(cfg: dict, secrets: dict) -> str:
     return "\n\n".join(sections)
 
 
+def _prep_reminders(events: list, cfg: dict) -> str:
+    """
+    Scan tomorrow's calendar events for keywords and suggest prep actions.
+    Keyword → action mapping is read from cfg["prep_reminders"]["keywords"].
+    Falls back to built-in defaults if not configured.
+    Returns a formatted section string, or "" if nothing to suggest.
+    """
+    if not events:
+        return ""
+
+    # Default keyword → reminder mapping.
+    # Keys are lowercased substrings to match against event title + location.
+    # Override or extend via config.json: "prep_reminders": {"keywords": {...}}
+    defaults = {
+        "gym":        "🏋️ Pack gym bag",
+        "swim":       "🏊 Pack swimwear and towel",
+        "pool":       "🏊 Pack swimwear and towel",
+        "flight":     "✈️ Pack passport and check-in online",
+        "airport":    "✈️ Pack passport and check-in online",
+        "travel":     "🧳 Pack luggage",
+        "interview":  "👔 Check dress code and prep documents",
+        "meeting":    "📋 Review agenda and prep notes",
+        "doctor":     "🏥 Bring ID and insurance card",
+        "hospital":   "🏥 Bring ID and insurance card",
+        "dentist":    "🦷 Bring ID and insurance card",
+        "school":     "🎒 Pack school bag",
+        "class":      "📚 Pack notebook and materials",
+        "exam":       "📝 Bring ID and stationery",
+        "hike":       "🥾 Pack water, snacks, and sunscreen",
+        "run":        "👟 Pack running gear",
+        "yoga":       "🧘 Pack mat and water bottle",
+        "dinner":     "🍽️ Check reservation and dress code",
+        "restaurant": "🍽️ Check reservation",
+        "date":       "💐 Check reservation and dress code",
+        "concert":    "🎵 Check venue and bring tickets",
+        "cinema":     "🎬 Bring tickets",
+        "church":     "⛪ Check dress code",
+    }
+
+    keyword_map = cfg.get("prep_reminders", {}).get("keywords", defaults)
+
+    suggestions = []
+    seen = set()
+
+    for ev in events:
+        searchable = (
+            (ev.get("summary", "") + " " + (ev.get("location") or "")).lower()
+        )
+        for keyword, action in keyword_map.items():
+            if keyword.lower() in searchable and action not in seen:
+                suggestions.append(action)
+                seen.add(action)
+
+    if not suggestions:
+        return ""
+
+    lines = ["🎒 <b>Tomorrow — prep reminders:</b>"]
+    for s in suggestions:
+        lines.append(f"   • {s}")
+    return "\n".join(lines)
+
+
 def evening_briefing(cfg: dict, secrets: dict) -> str:
     paths     = _resolve_paths(cfg)
     now       = datetime.now()
@@ -791,12 +853,22 @@ def evening_briefing(cfg: dict, secrets: dict) -> str:
     sections  = [f"🌆 <b>Evening briefing</b>\n{date_str}\n"]
 
     # Calendar — tomorrow
+    # events hoisted so prep_reminders can use it even if format_calendar fails
+    tomorrow_events = []
     try:
-        events = fetch_calendar_events(cfg, secrets, tomorrow)
-        sections.append(format_calendar(events, "tomorrow"))
+        tomorrow_events = fetch_calendar_events(cfg, secrets, tomorrow)
+        sections.append(format_calendar(tomorrow_events, "tomorrow"))
     except Exception as e:
         log.warning(f"Calendar section failed: {e}")
         sections.append("⚠️ Calendar: unavailable")
+
+    # Prep reminders — keyword-match tomorrow's events
+    try:
+        prep = _prep_reminders(tomorrow_events, cfg)
+        if prep:
+            sections.append(prep)
+    except Exception as e:
+        log.warning(f"Prep reminders section failed: {e}")
 
     # Weather — tomorrow
     try:
