@@ -1,13 +1,13 @@
 # daily-brief
 
-**Version:** 1.1.0
+**Version:** 1.2.0
 **Location:** `~/.openclaw/agents/main/workspace/skills/daily-brief/`
 
 ---
 
 ## What it does
 
-`daily-brief` posts two personal briefings to a dedicated Telegram topic each day — a morning edition to start the day, and an evening edition to close it out. Personal day planner, not a system health monitor (that's pulse-board).
+`daily-brief` posts two personal briefings to a configurable channel (Feishu or Telegram) each day — a morning edition and an evening edition. Personal day planner, not a system health monitor (that's pulse-board).
 
 ---
 
@@ -44,27 +44,17 @@ python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py even
 
 ## Required secrets
 
-All stored in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
+All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
 
 | Variable | Description |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (when channel = telegram) |
 | `TODOIST_API_TOKEN` | Todoist REST API token (shared with task-bridge) |
-| `OPENWEATHER_API_KEY` | OpenWeatherMap API key (free tier — new keys take up to 2h to activate) |
-| `DAILY_BRIEF_ICS_*` | One entry per calendar, key name is up to you |
-
----
-
-## Calendar — ICS feeds
-
-daily-brief fetches calendar events from standard ICS (iCalendar) URLs. These work with any calendar service that can publish a shareable ICS link:
-
-- **Outlook.com (personal):** Settings → View all Outlook settings → Calendar → Shared calendars → Publish a calendar → Can view all details → Publish → copy **ICS** link
-- **Office 365 (work/school):** Same flow at `outlook.office.com` (requires IT to have external publishing enabled)
-- **Google Calendar:** Calendar settings → [calendar name] → Integrate calendar → Secret address in iCal format
-- **iCloud:** Calendar → share → Public Calendar → copy link (change `webcal://` to `https://`)
-
-**ICS URLs are treated as secrets** — they give read access to your calendar to anyone who has them. They are stored in `openclaw-secrets.env`, never in `config.json`. Config only stores the secret key name.
+| `OPENWEATHER_API_KEY` | OpenWeatherMap API key (free — new keys take up to 2h to activate) |
+| `FEISHU_APP_ID` | Feishu app ID (when channel = feishu) |
+| `FEISHU_APP_SECRET` | Feishu app secret (when channel = feishu) |
+| `FEISHU_HORIZON_ROOT_MSG` | Root `om_xxx` message ID of the target Feishu topic |
+| `DAILY_BRIEF_ICS_*` | One per calendar — name is up to you |
 
 ---
 
@@ -74,6 +64,10 @@ daily-brief fetches calendar events from standard ICS (iCalendar) URLs. These wo
 
 ```json
 {
+  "channel": "feishu",
+  "feishu": {
+    "chat_id": "oc_..."
+  },
   "telegram": {
     "chat_id": -1001234567890,
     "thread_id": 99
@@ -102,29 +96,47 @@ daily-brief fetches calendar events from standard ICS (iCalendar) URLs. These wo
 }
 ```
 
-**Field notes:**
-
-- `telegram.thread_id` — the `message_thread_id` of the daily-brief topic. Messages go to main group chat if null.
-- `calendar.calendars` — list of calendars. Add as many as needed. Each entry needs a `label` (display name) and an `ics_secret_key` (the variable name to look up in `openclaw-secrets.env`).
-- `life_ledger.enabled` — set false if life-ledger not installed; section omitted entirely.
-- `pulse_board.enabled` — set false if pulse-board not installed; section omitted entirely.
-- `alert_window_days` — how many days ahead to scan for life-ledger dates and Todoist horizon tasks.
+**Notes:**
+- `channel` — `"feishu"` or `"telegram"`. Defaults to `"telegram"` if omitted.
+- `feishu.thread_id` — not used. Topic routing is via `FEISHU_HORIZON_ROOT_MSG` secret (reply API).
+- `calendar.calendars` — add as many calendars as needed.
+- `life_ledger.enabled` / `pulse_board.enabled` — set false to omit those sections entirely.
 
 ---
 
-## Life-ledger scanning
+## Feishu topic routing
 
-daily-brief reads `ledger.json` but **never writes to it**. Scans all entries for:
-- Keys named `birthday`, `born`, `anniversary`, `contract_end`, `appointment`, `deadline`, `expires`, `renewal`, `reminder`, `date`, or any key containing "date"
-- Notes containing `reminder:`, `remind:`, `birthday:`, or `due:` followed by a date
+Feishu rejects `receive_id_type=thread_id` with a field validation error. The only working method to post into an existing topic is the reply API, using the root `om_xxx` message ID of that thread.
 
-Dates without a year (e.g. `"09-15"`) are interpreted as the current or next occurrence.
+To get the root message ID of a topic:
+
+```bash
+source ~/.openclaw/shared/secrets/openclaw-secrets.env
+
+TOKEN=$(curl -s https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
+  -H "Content-Type: application/json" \
+  -d "{\"app_id\":\"$FEISHU_APP_ID\",\"app_secret\":\"$FEISHU_APP_SECRET\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tenant_access_token"])')
+
+curl -s "https://open.feishu.cn/open-apis/im/v1/messages?container_id_type=thread&container_id=$FEISHU_TOPIC_HORIZON&page_size=1" \
+  -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["items"][0]["message_id"])'
+```
+
+Store the result as `FEISHU_HORIZON_ROOT_MSG` in `openclaw-secrets.env`.
 
 ---
 
-## Section degradation
+## Calendar — ICS feeds
 
-Every section is wrapped in an independent try/except. If one data source fails, the rest of the briefing still sends. Errors go to `daily-brief.log`, not into the Telegram message.
+Works with any calendar that provides an ICS URL. URLs stored in secrets, never in config.
+
+| Service | Path |
+|---|---|
+| Outlook.com | Settings → Calendar → Shared calendars → Publish → copy ICS link |
+| Office 365 | Same flow at `outlook.office.com` (requires IT to allow external publishing) |
+| Google Calendar | Calendar settings → Integrate calendar → Secret address in iCal format |
+| iCloud | Share → Public Calendar → copy link (change `webcal://` to `https://`) |
 
 ---
 
@@ -140,7 +152,7 @@ Every section is wrapped in an independent try/except. If one data source fails,
 crontab -l | grep daily-brief
 ```
 
-The crontab includes a `PATH=` line with `~/.npm-global/bin` so `openclaw` resolves correctly in cron context.
+Includes a `PATH=` line with `~/.npm-global/bin` so `openclaw` resolves in cron context.
 
 ---
 
@@ -148,6 +160,6 @@ The crontab includes a `PATH=` line with `~/.npm-global/bin` so `openclaw` resol
 
 | Skill | Relationship |
 |---|---|
-| `pulse-board` | Separate skill — system health. daily-brief reads `last-delivered.md` for the rig one-liner only. |
+| `pulse-board` | daily-brief reads `last-delivered.md` for the morning rig one-liner |
 | `task-bridge` | Shares `TODOIST_API_TOKEN` |
 | `life-ledger` | daily-brief reads `ledger.json` — read-only |

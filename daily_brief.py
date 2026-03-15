@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 daily-brief v1.2.0
-Morning and evening personal briefings via Telegram.
+Morning and evening personal briefings via configurable channel (Feishu or Telegram).
 Usage: python3 daily_brief.py [morning|evening]
 """
 
@@ -586,16 +586,8 @@ def rig_status_line(pulse_delivered_path: Path) -> str:
 # ── Delivery ──────────────────────────────────────────────────────────────────
 
 def strip_html(text: str) -> str:
-    """
-    Convert HTML-formatted brief text to plain text suitable for Feishu.
-    - <b>...</b>  →  *...*  (Feishu bold in text messages)
-    - <i>...</i>  →  text as-is (no italic in Feishu plain text)
-    - All remaining tags stripped.
-    """
-    text = re.sub(r"<b>(.*?)</b>", r"**", text, flags=re.DOTALL)
-    text = re.sub(r"<i>(.*?)</i>", r"", text, flags=re.DOTALL)
-    text = re.sub(r"<[^>]+>", "", text)
-    return text
+    """Strip all HTML tags for plain-text delivery (e.g. Feishu)."""
+    return re.sub(r"<[^>]+>", "", text)
 
 
 def send_telegram(text: str, cfg: dict, secrets: dict) -> bool:
@@ -649,8 +641,8 @@ def send_feishu(text: str, cfg: dict, secrets: dict) -> bool:
         log.error("FEISHU_APP_ID or FEISHU_APP_SECRET not set in secrets")
         return False
 
-    chat_id   = cfg["feishu"]["chat_id"]
-    thread_id = cfg["feishu"].get("thread_id")
+    chat_id      = cfg["feishu"]["chat_id"]
+    root_msg_id  = secrets.get("FEISHU_HORIZON_ROOT_MSG", "")
 
     # Step 1 — get tenant access token
     token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
@@ -670,17 +662,33 @@ def send_feishu(text: str, cfg: dict, secrets: dict) -> bool:
         log.error(f"Feishu token fetch failed: {e}")
         return False
 
-    # Step 2 — send message
+    # Step 2 — deliver message
+    # Feishu does not support receive_id_type=thread_id (field rejected by API).
+    # The only way to post into an existing topic is via the reply API,
+    # using the root message ID (om_xxx) of that thread as the target.
+    # root_msg_id is stored in secrets as FEISHU_HORIZON_ROOT_MSG.
+    # Fallback: send to the group chat_id directly if root_msg_id is absent.
     plain = strip_html(text)
-    payload = {
-        "receive_id": chat_id,
-        "msg_type":   "text",
-        "content":    json.dumps({"text": plain}),
-    }
-    if thread_id:
-        payload["thread_id"] = thread_id
 
-    msg_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+    if root_msg_id:
+        # Reply into the hOrizon topic thread
+        reply_url = f"https://open.feishu.cn/open-apis/im/v1/messages/{root_msg_id}/reply"
+        payload = {
+            "msg_type": "text",
+            "content":  json.dumps({"text": plain}),
+            "uuid":     datetime.now().strftime("%Y%m%d%H%M%S"),
+        }
+        msg_url = reply_url
+    else:
+        # Fallback: post to group chat (no topic)
+        log.warning("FEISHU_HORIZON_ROOT_MSG not set — posting to group chat, not topic")
+        payload = {
+            "receive_id": chat_id,
+            "msg_type":   "text",
+            "content":    json.dumps({"text": plain}),
+        }
+        msg_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+
     msg_req = urllib.request.Request(
         msg_url,
         data=json.dumps(payload).encode(),
@@ -731,7 +739,7 @@ def morning_briefing(cfg: dict, secrets: dict) -> str:
     now      = datetime.now()
     date_str = now.strftime("%A, %-d %B %Y")
     today    = date.today()
-    sections = [f"🌅 <b>Good morning, Jakub!</b>\n{date_str}\n"]
+    sections = [f"🌅 <b>Good morning!</b>\n{date_str}\n"]
 
     # Weather — today
     try:

@@ -3,9 +3,8 @@
   "version": "1.2.0",
   "description": "Morning and evening personal briefings via configurable channel (Feishu or Telegram) — weather, calendar, tasks, life reminders",
   "requires": ["python3"],
-  "secrets": ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "TELEGRAM_BOT_TOKEN", "TODOIST_API_TOKEN", "OPENWEATHER_API_KEY"],
+  "secrets": ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_HORIZON_ROOT_MSG", "TELEGRAM_BOT_TOKEN", "TODOIST_API_TOKEN", "OPENWEATHER_API_KEY"],
   "optional_secrets": ["DAILY_BRIEF_ICS_*"],
   "optional_skills": ["life-ledger", "pulse-board"],
-  "cron": ["0 6 * * *", "0 21 * * *"],
-  "telegram_thread": "daily-brief topic (set thread_id in config.json after creating the topic)"
+  "cron": ["0 6 * * *", "0 21 * * *"]
 }

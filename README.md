@@ -34,14 +34,14 @@ Life-ledger and pulse-board are **optional** — setup asks whether they're inst
 
 ## Delivery channels
 
-Set `"channel"` in `config.json` to route briefings to the right place:
+Set `"channel"` in `config.json`:
 
 | Value | Description |
 |---|---|
-| `"feishu"` | Feishu chat topic via tenant access token |
+| `"feishu"` | Feishu chat topic via tenant access token + reply API |
 | `"telegram"` | Telegram supergroup topic (default) |
 
-Both channel configs can coexist in `config.json` — only the active one is used. Switching channels is a one-line config change.
+Both configs can coexist — switching channels is a one-line change.
 
 ---
 
@@ -50,8 +50,8 @@ Both channel configs can coexist in `config.json` — only the active one is use
 - Python 3.9+ (stdlib only — no pip dependencies)
 - OpenWeatherMap API key (free tier — new keys take up to 2 hours to activate)
 - Todoist account + API token
-- **Feishu** (primary): Feishu app with `app_id` + `app_secret`, and a target chat + topic
-- **Telegram** (fallback): bot token, supergroup `chat_id`, and topic `thread_id`
+- **Feishu** (primary): app with `app_id` + `app_secret`, target chat, and root message ID of the topic
+- **Telegram** (fallback): bot token, supergroup `chat_id`, topic `thread_id`
 
 Optional:
 - ICS calendar URLs (Outlook.com, Office 365, Google Calendar, iCloud, or any standard ICS source)
@@ -63,66 +63,66 @@ Optional:
 ## Install
 
 ```bash
-# Copy files to your skill directory
 cp daily_brief.py setup.py SKILL.md CHANGELOG.md _meta.json \
   ~/.openclaw/agents/main/workspace/skills/daily-brief/
 
-# Run interactive setup
 python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/setup.py
 ```
 
 Setup will:
-- Ask for your delivery channel and corresponding credentials
-- Ask for your city name, coordinates, and OpenWeatherMap key
-- Ask for your Todoist token
-- Ask about calendar ICS feeds — how many, label and secret key for each
-- Ask whether life-ledger and pulse-board are installed (and where)
-- Offer to validate each API live before writing anything
+- Ask for your delivery channel and credentials
+- Ask for city name, coordinates, and OpenWeatherMap key
+- Ask for Todoist token
+- Ask about ICS calendar feeds
+- Ask whether life-ledger and pulse-board are installed
+- Validate each API live before writing anything
 - Write `~/.openclaw/config/daily-brief/config.json`
-- Install two cron entries (06:00 and 21:00)
+- Install cron entries (06:00 and 21:00)
 
 ---
 
-## Config structure
+## Feishu topic routing
 
-`~/.openclaw/config/daily-brief/config.json`:
+Feishu rejects `receive_id_type=thread_id`. The only working method to post into an existing topic is the reply API, targeting the root `om_xxx` message ID of the thread.
 
-```json
-{
-  "channel": "feishu",
-  "feishu": {
-    "chat_id": "oc_...",
-    "thread_id": "omt_..."
-  },
-  "telegram": {
-    "chat_id": -1001234567890,
-    "thread_id": 99
-  },
-  "weather": {
-    "lat": 0.0000,
-    "lon": 0.0000,
-    "city_name": "Your City"
-  },
-  "calendar": {
-    "enabled": true,
-    "calendars": [
-      {"label": "Personal", "ics_secret_key": "DAILY_BRIEF_ICS_PERSONAL"},
-      {"label": "Work",     "ics_secret_key": "DAILY_BRIEF_ICS_WORK"}
-    ]
-  },
-  "life_ledger": {
-    "enabled": true,
-    "path": "/home/USER/.openclaw/shared/life-ledger/ledger.json"
-  },
-  "pulse_board": {
-    "enabled": true,
-    "last_delivered_path": "/home/USER/.openclaw/agents/main/workspace/skills/pulse-board/last-delivered.md"
-  },
-  "alert_window_days": 7
-}
+Get the root message ID of your target topic:
+
+```bash
+source ~/.openclaw/shared/secrets/openclaw-secrets.env
+
+TOKEN=$(curl -s https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
+  -H "Content-Type: application/json" \
+  -d "{\"app_id\":\"$FEISHU_APP_ID\",\"app_secret\":\"$FEISHU_APP_SECRET\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tenant_access_token"])')
+
+curl -s "https://open.feishu.cn/open-apis/im/v1/messages?container_id_type=thread&container_id=$FEISHU_TOPIC_HORIZON&page_size=1" \
+  -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["items"][0]["message_id"])'
 ```
 
-`channel` defaults to `"telegram"` if omitted.
+Store the result:
+```bash
+echo "FEISHU_HORIZON_ROOT_MSG=om_xxx..." \
+  >> ~/.openclaw/shared/secrets/openclaw-secrets.env
+```
+
+---
+
+## Calendar setup
+
+ICS URLs are treated as secrets — store them in `openclaw-secrets.env`:
+
+```bash
+echo "DAILY_BRIEF_ICS_PERSONAL=https://..." \
+  >> ~/.openclaw/shared/secrets/openclaw-secrets.env
+```
+
+| Service | Path |
+|---|---|
+| Outlook.com | Settings → Calendar → Shared calendars → Publish → copy ICS link |
+| Office 365 | Same flow at `outlook.office.com` (requires IT to allow external publishing) |
+| Google Calendar | Calendar settings → Integrate calendar → Secret address in iCal format |
+| iCloud | Share → Public Calendar → copy link (change `webcal://` to `https://`) |
 
 ---
 
@@ -134,35 +134,11 @@ All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
 |---|---|
 | `FEISHU_APP_ID` | Feishu app ID |
 | `FEISHU_APP_SECRET` | Feishu app secret |
+| `FEISHU_HORIZON_ROOT_MSG` | Root `om_xxx` message ID of the target Feishu topic |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (fallback channel) |
 | `TODOIST_API_TOKEN` | Todoist REST API token |
 | `OPENWEATHER_API_KEY` | OpenWeatherMap API key |
 | `DAILY_BRIEF_ICS_*` | One per calendar — name is up to you |
-
----
-
-## Calendar setup
-
-daily-brief uses ICS feeds — a universal, auth-free calendar format supported by every major calendar service.
-
-**ICS URLs are treated as secrets.** Store them in `openclaw-secrets.env`:
-
-```bash
-echo "DAILY_BRIEF_ICS_PERSONAL=https://outlook.live.com/owa/calendar/..." \
-  >> ~/.openclaw/shared/secrets/openclaw-secrets.env
-
-echo "DAILY_BRIEF_ICS_WORK=https://outlook.office365.com/owa/calendar/..." \
-  >> ~/.openclaw/shared/secrets/openclaw-secrets.env
-```
-
-**How to get your ICS URL:**
-
-| Service | Path |
-|---|---|
-| Outlook.com | Settings → View all Outlook settings → Calendar → Shared calendars → Publish a calendar → Can view all details → Publish → copy **ICS** link |
-| Office 365 | Same flow at `outlook.office.com` (requires IT to allow external publishing) |
-| Google Calendar | Calendar settings → [calendar name] → Integrate calendar → Secret address in iCal format |
-| iCloud | Calendar app → share → Public Calendar → copy link (change `webcal://` to `https://`) |
 
 ---
 
@@ -177,19 +153,13 @@ python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py even
 
 ## Why ICS and not Microsoft Graph?
 
-Microsoft deprecated personal account app registration outside a directory in June 2024. Getting a directory now requires an Azure subscription — not a reasonable dependency for a home server skill. ICS export requires no auth, no app registration, and works for personal Outlook.com and (if IT allows external publishing) work/school Microsoft 365 accounts.
+Microsoft deprecated personal account app registration outside a directory in June 2024. ICS export requires no auth, no app registration, and works for personal Outlook.com and (if IT allows external publishing) work/school Microsoft 365 accounts.
 
 ---
 
-## Section degradation
+## Formatting note
 
-Every section is independent. If weather is down, calendar and tasks still appear. Errors go to `daily-brief.log`, not into the message.
-
----
-
-## Formatting
-
-Briefs are composed in HTML internally. When delivering to **Telegram**, HTML parse_mode is used directly. When delivering to **Feishu**, HTML is converted to plain text (`<b>` → `*bold*`, remaining tags stripped) since Feishu text messages don't support HTML.
+Briefs are composed in HTML internally. Telegram receives them with `parse_mode: HTML`. Feishu receives plain text — all HTML tags are stripped before delivery.
 
 ---
 
