@@ -1,5 +1,37 @@
 # Changelog — daily-brief
 
+## [1.2.0] — 2026-03-15
+
+### Added
+- **Configurable delivery channel** — set `"channel": "feishu"` or `"channel": "telegram"` in `config.json`
+- `send_feishu()` — delivers briefs to a Feishu chat topic via tenant access token flow (stdlib `urllib` only)
+  - Step 1: POST to `/auth/v3/tenant_access_token/internal` with `app_id` + `app_secret`
+  - Step 2: POST to `/im/v1/messages` with `receive_id_type=chat_id` and optional `thread_id`
+  - Reads `FEISHU_APP_ID`, `FEISHU_APP_SECRET` from secrets
+  - Reads `cfg["feishu"]["chat_id"]` and `cfg["feishu"].get("thread_id")`
+- `strip_html()` — converts HTML-formatted brief text to Feishu-compatible plain text: `<b>` → `*bold*`, remaining tags stripped
+- `send_brief()` — dispatcher that reads `cfg["channel"]` and routes to `send_feishu()` or `send_telegram()`
+
+### Changed
+- All delivery now goes through `send_brief()` — `send_telegram()` still exists and is called when `channel = "telegram"` (default)
+- `_meta.json` description updated; `FEISHU_APP_ID` and `FEISHU_APP_SECRET` added to secrets list
+
+### Config shape (new fields)
+```json
+{
+  "channel": "feishu",
+  "feishu": {
+    "chat_id": "oc_...",
+    "thread_id": "omt_..."
+  },
+  "telegram": {
+    "chat_id": -1001234567890,
+    "thread_id": 99
+  }
+}
+```
+Existing `telegram` block unchanged. `channel` defaults to `"telegram"` if omitted.
+
 ## [1.1.0] — 2026-03-15
 
 ### Added

@@ -1,6 +1,6 @@
 # Daily Brief
 
-An [OpenClaw](https://github.com/LittleJakub) skill that posts a morning and evening personal briefing to a Telegram topic — weather, calendar events, tasks, life reminders, and a rig health check.
+An [OpenClaw](https://github.com/LittleJakub) skill that posts a morning and evening personal briefing via a configurable channel (Feishu or Telegram) — weather, calendar events, tasks, life reminders, and a rig health check.
 
 This is a **personal day planner**, not a system health monitor. For system health, see [pulse-board](https://github.com/LittleJakub/pulse-board).
 
@@ -32,13 +32,26 @@ Life-ledger and pulse-board are **optional** — setup asks whether they're inst
 
 ---
 
+## Delivery channels
+
+Set `"channel"` in `config.json` to route briefings to the right place:
+
+| Value | Description |
+|---|---|
+| `"feishu"` | Feishu chat topic via tenant access token |
+| `"telegram"` | Telegram supergroup topic (default) |
+
+Both channel configs can coexist in `config.json` — only the active one is used. Switching channels is a one-line config change.
+
+---
+
 ## Requirements
 
 - Python 3.9+ (stdlib only — no pip dependencies)
-- A Telegram bot and a supergroup with a dedicated topic
-  - Two IDs required: the supergroup's `chat_id` and the topic's `thread_id` (setup explains how to find both)
 - OpenWeatherMap API key (free tier — new keys take up to 2 hours to activate)
 - Todoist account + API token
+- **Feishu** (primary): Feishu app with `app_id` + `app_secret`, and a target chat + topic
+- **Telegram** (fallback): bot token, supergroup `chat_id`, and topic `thread_id`
 
 Optional:
 - ICS calendar URLs (Outlook.com, Office 365, Google Calendar, iCloud, or any standard ICS source)
@@ -59,7 +72,7 @@ python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/setup.py
 ```
 
 Setup will:
-- Ask for your Telegram chat_id, thread_id, and bot token (with how-to instructions)
+- Ask for your delivery channel and corresponding credentials
 - Ask for your city name, coordinates, and OpenWeatherMap key
 - Ask for your Todoist token
 - Ask about calendar ICS feeds — how many, label and secret key for each
@@ -70,11 +83,69 @@ Setup will:
 
 ---
 
+## Config structure
+
+`~/.openclaw/config/daily-brief/config.json`:
+
+```json
+{
+  "channel": "feishu",
+  "feishu": {
+    "chat_id": "oc_...",
+    "thread_id": "omt_..."
+  },
+  "telegram": {
+    "chat_id": -1001234567890,
+    "thread_id": 99
+  },
+  "weather": {
+    "lat": 0.0000,
+    "lon": 0.0000,
+    "city_name": "Your City"
+  },
+  "calendar": {
+    "enabled": true,
+    "calendars": [
+      {"label": "Personal", "ics_secret_key": "DAILY_BRIEF_ICS_PERSONAL"},
+      {"label": "Work",     "ics_secret_key": "DAILY_BRIEF_ICS_WORK"}
+    ]
+  },
+  "life_ledger": {
+    "enabled": true,
+    "path": "/home/USER/.openclaw/shared/life-ledger/ledger.json"
+  },
+  "pulse_board": {
+    "enabled": true,
+    "last_delivered_path": "/home/USER/.openclaw/agents/main/workspace/skills/pulse-board/last-delivered.md"
+  },
+  "alert_window_days": 7
+}
+```
+
+`channel` defaults to `"telegram"` if omitted.
+
+---
+
+## Required secrets
+
+All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
+
+| Variable | Description |
+|---|---|
+| `FEISHU_APP_ID` | Feishu app ID |
+| `FEISHU_APP_SECRET` | Feishu app secret |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (fallback channel) |
+| `TODOIST_API_TOKEN` | Todoist REST API token |
+| `OPENWEATHER_API_KEY` | OpenWeatherMap API key |
+| `DAILY_BRIEF_ICS_*` | One per calendar — name is up to you |
+
+---
+
 ## Calendar setup
 
 daily-brief uses ICS feeds — a universal, auth-free calendar format supported by every major calendar service.
 
-**ICS URLs are treated as secrets.** They give read access to your calendar to anyone who has them. Store them in `openclaw-secrets.env`:
+**ICS URLs are treated as secrets.** Store them in `openclaw-secrets.env`:
 
 ```bash
 echo "DAILY_BRIEF_ICS_PERSONAL=https://outlook.live.com/owa/calendar/..." \
@@ -83,8 +154,6 @@ echo "DAILY_BRIEF_ICS_PERSONAL=https://outlook.live.com/owa/calendar/..." \
 echo "DAILY_BRIEF_ICS_WORK=https://outlook.office365.com/owa/calendar/..." \
   >> ~/.openclaw/shared/secrets/openclaw-secrets.env
 ```
-
-Then run setup and provide the key names (`DAILY_BRIEF_ICS_PERSONAL`, `DAILY_BRIEF_ICS_WORK`, etc.) when prompted. You can add as many calendars as you like.
 
 **How to get your ICS URL:**
 
@@ -106,34 +175,21 @@ python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py even
 
 ---
 
-## Required secrets
-
-All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
-
-| Variable | Description |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
-| `TODOIST_API_TOKEN` | Todoist REST API token |
-| `OPENWEATHER_API_KEY` | OpenWeatherMap API key |
-| `DAILY_BRIEF_ICS_*` | One per calendar — name is up to you |
-
----
-
 ## Why ICS and not Microsoft Graph?
 
-Microsoft deprecated personal account app registration outside a directory in June 2024. Getting a directory now requires an Azure subscription — not a reasonable dependency for a home server skill. ICS export requires no auth, no app registration, and works for personal Outlook.com and (if IT allows external publishing) work/school Microsoft 365 accounts. Staleness of a few hours is completely acceptable for a morning/evening briefing.
+Microsoft deprecated personal account app registration outside a directory in June 2024. Getting a directory now requires an Azure subscription — not a reasonable dependency for a home server skill. ICS export requires no auth, no app registration, and works for personal Outlook.com and (if IT allows external publishing) work/school Microsoft 365 accounts.
 
 ---
 
 ## Section degradation
 
-Every section is independent. If weather is down, calendar and tasks still appear. Errors go to `daily-brief.log`, not into the Telegram message.
+Every section is independent. If weather is down, calendar and tasks still appear. Errors go to `daily-brief.log`, not into the message.
 
 ---
 
-## Telegram formatting
+## Formatting
 
-Uses **HTML parse_mode** throughout. Markdown parse_mode produces `400 Bad Request` errors when content contains underscores, asterisks, or other special characters — a lesson learned from pulse-board.
+Briefs are composed in HTML internally. When delivering to **Telegram**, HTML parse_mode is used directly. When delivering to **Feishu**, HTML is converted to plain text (`<b>` → `*bold*`, remaining tags stripped) since Feishu text messages don't support HTML.
 
 ---
 

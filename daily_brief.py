@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-daily-brief v1.1.0
+daily-brief v1.2.0
 Morning and evening personal briefings via Telegram.
 Usage: python3 daily_brief.py [morning|evening]
 """
@@ -58,7 +58,7 @@ def http_get_json(url: str, headers: Optional[dict] = None) -> dict:
         return json.loads(resp.read().decode())
 
 def http_get_text(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "daily-brief/1.1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "daily-brief/1.2.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -583,7 +583,20 @@ def rig_status_line(pulse_delivered_path: Path) -> str:
         return "❓ <b>Rig:</b> status unknown"
 
 
-# ── Telegram ───────────────────────────────────────────────────────────────────
+# ── Delivery ──────────────────────────────────────────────────────────────────
+
+def strip_html(text: str) -> str:
+    """
+    Convert HTML-formatted brief text to plain text suitable for Feishu.
+    - <b>...</b>  →  *...*  (Feishu bold in text messages)
+    - <i>...</i>  →  text as-is (no italic in Feishu plain text)
+    - All remaining tags stripped.
+    """
+    text = re.sub(r"<b>(.*?)</b>", r"**", text, flags=re.DOTALL)
+    text = re.sub(r"<i>(.*?)</i>", r"", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", "", text)
+    return text
+
 
 def send_telegram(text: str, cfg: dict, secrets: dict) -> bool:
     token = secrets.get("TELEGRAM_BOT_TOKEN", "")
@@ -622,6 +635,81 @@ def send_telegram(text: str, cfg: dict, secrets: dict) -> bool:
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
         return False
+
+
+def send_feishu(text: str, cfg: dict, secrets: dict) -> bool:
+    """
+    Deliver a brief to a Feishu chat topic.
+    Auth: tenant_access_token via app_id + app_secret (2-step flow).
+    HTML formatting is stripped/converted before sending.
+    """
+    app_id     = secrets.get("FEISHU_APP_ID", "")
+    app_secret = secrets.get("FEISHU_APP_SECRET", "")
+    if not app_id or not app_secret:
+        log.error("FEISHU_APP_ID or FEISHU_APP_SECRET not set in secrets")
+        return False
+
+    chat_id   = cfg["feishu"]["chat_id"]
+    thread_id = cfg["feishu"].get("thread_id")
+
+    # Step 1 — get tenant access token
+    token_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    token_req = urllib.request.Request(
+        token_url,
+        data=json.dumps({"app_id": app_id, "app_secret": app_secret}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(token_req, timeout=10) as resp:
+            token_data = json.loads(resp.read())
+        access_token = token_data.get("tenant_access_token", "")
+        if not access_token:
+            log.error(f"Feishu token fetch failed: {token_data}")
+            return False
+    except Exception as e:
+        log.error(f"Feishu token fetch failed: {e}")
+        return False
+
+    # Step 2 — send message
+    plain = strip_html(text)
+    payload = {
+        "receive_id": chat_id,
+        "msg_type":   "text",
+        "content":    json.dumps({"text": plain}),
+    }
+    if thread_id:
+        payload["thread_id"] = thread_id
+
+    msg_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+    msg_req = urllib.request.Request(
+        msg_url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(msg_req, timeout=15) as resp:
+            result = json.loads(resp.read())
+        if result.get("code", -1) != 0:
+            log.error(f"Feishu API error: {result}")
+            return False
+        return True
+    except urllib.error.HTTPError as e:
+        log.error(f"Feishu HTTP {e.code}: {e.read().decode()}")
+        return False
+    except Exception as e:
+        log.error(f"Feishu send failed: {e}")
+        return False
+
+
+def send_brief(text: str, cfg: dict, secrets: dict) -> bool:
+    """Route delivery to the configured channel (feishu or telegram)."""
+    channel = cfg.get("channel", "telegram")
+    if channel == "feishu":
+        return send_feishu(text, cfg, secrets)
+    return send_telegram(text, cfg, secrets)
 
 
 # ── Path resolution ────────────────────────────────────────────────────────────
@@ -761,13 +849,14 @@ def main():
     print(text)
     print("\n" + "─" * 40)
 
-    delivered = send_telegram(text, cfg, secrets)
+    channel = cfg.get("channel", "telegram")
+    delivered = send_brief(text, cfg, secrets)
     if delivered:
-        print("✅ Sent to Telegram")
-        log.info(f"{edition} briefing delivered successfully")
+        print(f"✅ Sent via {channel}")
+        log.info(f"{edition} briefing delivered successfully via {channel}")
     else:
-        print("❌ Telegram delivery failed — check daily-brief.log")
-        log.error(f"{edition} briefing delivery failed")
+        print(f"❌ Delivery failed ({channel}) — check daily-brief.log")
+        log.error(f"{edition} briefing delivery failed via {channel}")
 
 
 if __name__ == "__main__":
