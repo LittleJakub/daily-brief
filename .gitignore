@@ -1,0 +1,23 @@
+# Runtime files — never commit these
+daily-brief.log
+*.log
+
+# Config contains personal paths and chat IDs
+config.json
+
+# Secrets — never commit
+*.env
+openclaw-secrets.env
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

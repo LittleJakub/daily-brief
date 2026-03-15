@@ -1,0 +1,10 @@
+{
+  "name": "daily-brief",
+  "version": "1.0.0",
+  "description": "Morning and evening personal briefings via Telegram — weather, tasks, life reminders",
+  "requires": ["python3"],
+  "secrets": ["TELEGRAM_BOT_TOKEN", "TODOIST_API_TOKEN", "OPENWEATHER_API_KEY"],
+  "optional_skills": ["life-ledger", "pulse-board"],
+  "cron": ["0 6 * * *", "0 21 * * *"],
+  "telegram_thread": "daily-brief topic (set thread_id in config.json after creating the topic)"
+}
