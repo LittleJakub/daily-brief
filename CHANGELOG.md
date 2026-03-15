@@ -1,5 +1,17 @@
 # Changelog — daily-brief
 
+## [1.3.0] — 2026-03-15
+
+### Added
+- **Prep reminders in evening briefing** — keyword-matches tomorrow's calendar events and suggests what to pack/prepare
+  - Runs after the calendar section; omitted entirely if no events or no matches
+  - Keyword → action table has sensible defaults (gym, flight, meeting, doctor, exam, hike, etc.)
+  - Fully configurable via `config.json` under `"prep_reminders": {"keywords": {...}}` — add, remove, or override any keyword without touching code
+  - Degrades independently — if it fails, the rest of the evening briefing is unaffected
+  - `tomorrow_events` hoisted out of the calendar try/except so prep reminders work even if calendar formatting fails
+
+---
+
 ## [1.2.0] — 2026-03-15
 
 ### Added
