@@ -170,8 +170,9 @@ def _parse_ics_datetime_full(val: str) -> Optional[datetime]:
 def _rrule_matches(rrule: str, dtstart_date: date, check_date: date) -> bool:
     """
     Check if an RRULE causes an event to recur on check_date.
-    Supports FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with optional INTERVAL.
-    Does not implement UNTIL/COUNT/BYDAY etc — good enough for personal calendars.
+    Supports FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with INTERVAL, UNTIL, and BYDAY.
+    UNTIL is honoured — expired recurring events are correctly excluded.
+    BYDAY is honoured — weekly events match by weekday name, not delta modulo.
     """
     if check_date < dtstart_date:
         return False
@@ -181,21 +182,45 @@ def _rrule_matches(rrule: str, dtstart_date: date, check_date: date) -> bool:
             k, v = part.split("=", 1)
             params[k.strip().upper()] = v.strip()
 
+    until_raw = params.get("UNTIL", "")
+    if until_raw:
+        until_str = until_raw.rstrip("Z")[:8]
+        try:
+            from datetime import datetime as _dt
+            until_date = _dt.strptime(until_str, "%Y%m%d").date()
+            if check_date > until_date:
+                return False
+        except ValueError:
+            pass
+
     freq     = params.get("FREQ", "")
     interval = int(params.get("INTERVAL", "1"))
     delta    = check_date - dtstart_date
+    _BYDAY   = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
 
     if freq == "DAILY":
         return delta.days % interval == 0
+
     elif freq == "WEEKLY":
-        return delta.days % (7 * interval) == 0
+        byday_raw = params.get("BYDAY", "")
+        if byday_raw:
+            days = [_BYDAY[d.strip()] for d in byday_raw.split(",") if d.strip() in _BYDAY]
+            if check_date.weekday() not in days:
+                return False
+            return (delta.days // 7) % interval == 0
+        else:
+            return delta.days % (7 * interval) == 0
+
     elif freq == "MONTHLY":
         months = (check_date.year - dtstart_date.year) * 12 + (check_date.month - dtstart_date.month)
         return months % interval == 0 and check_date.day == dtstart_date.day
+
     elif freq == "YEARLY":
         years = check_date.year - dtstart_date.year
         return years % interval == 0 and check_date.month == dtstart_date.month and check_date.day == dtstart_date.day
+
     return False
+
 
 def _is_all_day(dtstart_raw: str) -> bool:
     """Return True if the DTSTART value is a DATE (not DATE-TIME)."""
@@ -739,7 +764,7 @@ def morning_briefing(cfg: dict, secrets: dict) -> str:
     now      = datetime.now()
     date_str = now.strftime("%A, %-d %B %Y")
     today    = date.today()
-    sections = [f"🌅 <b>Good morning!</b>\n{date_str}\n"]
+    sections = [f"🌅 <b>Good morning!</b>\n{date_str}"]
 
     # Weather — today
     try:
@@ -850,7 +875,7 @@ def evening_briefing(cfg: dict, secrets: dict) -> str:
     now       = datetime.now()
     date_str  = now.strftime("%A, %-d %B %Y")
     tomorrow  = date.today() + timedelta(days=1)
-    sections  = [f"🌆 <b>Evening briefing</b>\n{date_str}\n"]
+    sections  = [f"🌆 <b>Evening briefing</b>\n{date_str}"]
 
     # Calendar — tomorrow
     # events hoisted so prep_reminders can use it even if format_calendar fails
