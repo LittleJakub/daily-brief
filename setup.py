@@ -323,7 +323,7 @@ def setup_life_ledger() -> dict:
     info("  (read-only — daily-brief never writes to the ledger)")
     print()
 
-    default_path = str(OC / "data/life-ledger/ledger.json")
+    default_path = str(OC / "agents/main/workspace/life-ledger/ledger.json")
     if ask("Is life-ledger installed? [Y/n]: ").lower() == "n":
         warn("Life-ledger skipped — reminders section will be omitted")
         return {"enabled": False, "path": None}
