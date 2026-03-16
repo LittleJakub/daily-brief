@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Optional
 import logging
 import re
-
 # ── Paths ──────────────────────────────────────────────────────────────────────
-HOME        = Path.home()
-SKILL_DIR   = HOME / ".openclaw/agents/main/workspace/skills/daily-brief"
-CONFIG_PATH = HOME / ".openclaw/config/daily-brief/config.json"
-SECRETS_PATH = HOME / ".openclaw/shared/secrets/openclaw-secrets.env"
-LOG_PATH    = SKILL_DIR / "daily-brief.log"
+import os
+OC          = Path(os.environ.get("OPENCLAW_STATE_DIR", str(Path.home() / ".openclaw")))
+SKILL_DIR   = Path(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = OC / "config/daily-brief/config.json"
+SECRETS_PATH = OC / ".env"
+LOG_PATH    = OC / "logs/daily-brief.log"
 
 logging.basicConfig(
     filename=str(LOG_PATH),

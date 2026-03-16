@@ -11,12 +11,12 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
-
-HOME        = Path.home()
-SKILL_DIR   = HOME / ".openclaw/agents/main/workspace/skills/daily-brief"
-CONFIG_DIR  = HOME / ".openclaw/config/daily-brief"
+import os
+OC          = Path(os.environ.get("OPENCLAW_STATE_DIR", str(Path.home() / ".openclaw")))
+SKILL_DIR   = Path(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_DIR  = OC / "config/daily-brief"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-SECRETS_ENV = HOME / ".openclaw/shared/secrets/openclaw-secrets.env"
+SECRETS_ENV = OC / ".env"
 SCRIPT_PATH = SKILL_DIR / "daily_brief.py"
 
 
@@ -323,7 +323,7 @@ def setup_life_ledger() -> dict:
     info("  (read-only — daily-brief never writes to the ledger)")
     print()
 
-    default_path = str(HOME / ".openclaw/shared/life-ledger/ledger.json")
+    default_path = str(OC / "data/life-ledger/ledger.json")
     if ask("Is life-ledger installed? [Y/n]: ").lower() == "n":
         warn("Life-ledger skipped — reminders section will be omitted")
         return {"enabled": False, "path": None}
@@ -346,7 +346,7 @@ def setup_pulse_board() -> dict:
     info("  This reads pulse-board's last-delivered.md to report when the last pulse ran.")
     print()
 
-    default_path = str(HOME / ".openclaw/agents/main/workspace/skills/pulse-board/last-delivered.md")
+    default_path = str(Path(os.environ.get("PULSE_HOME", str(OC / "pulse-board"))) / "logs/last-delivered.md")
     if ask("Is pulse-board installed? [Y/n]: ").lower() == "n":
         warn("Pulse-board skipped — rig status section will be omitted")
         return {"enabled": False, "last_delivered_path": None}
