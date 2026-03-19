@@ -64,9 +64,9 @@ Optional:
 
 ```bash
 cp daily_brief.py setup.py SKILL.md CHANGELOG.md _meta.json \
-  ~/.openclaw/agents/main/workspace/skills/daily-brief/
+  ~/.openclaw/skills/daily-brief/
 
-python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/setup.py
+python3 ~/.openclaw/skills/daily-brief/setup.py
 ```
 
 Setup will:
@@ -88,7 +88,7 @@ Feishu rejects `receive_id_type=thread_id`. The only working method to post into
 Get the root message ID of your target topic:
 
 ```bash
-source ~/.openclaw/shared/secrets/openclaw-secrets.env
+source ~/.openclaw/.env
 
 TOKEN=$(curl -s https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
   -H "Content-Type: application/json" \
@@ -103,7 +103,7 @@ curl -s "https://open.feishu.cn/open-apis/im/v1/messages?container_id_type=threa
 Store the result:
 ```bash
 echo "FEISHU_HORIZON_ROOT_MSG=om_xxx..." \
-  >> ~/.openclaw/shared/secrets/openclaw-secrets.env
+  >> ~/.openclaw/.env
 ```
 
 ---
@@ -114,7 +114,7 @@ ICS URLs are treated as secrets — store them in `openclaw-secrets.env`:
 
 ```bash
 echo "DAILY_BRIEF_ICS_PERSONAL=https://..." \
-  >> ~/.openclaw/shared/secrets/openclaw-secrets.env
+  >> ~/.openclaw/.env
 ```
 
 | Service | Path |
@@ -128,7 +128,7 @@ echo "DAILY_BRIEF_ICS_PERSONAL=https://..." \
 
 ## Required secrets
 
-All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
+All in `~/.openclaw/.env`:
 
 | Variable | Description |
 |---|---|
@@ -145,8 +145,8 @@ All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
 ## Manual run
 
 ```bash
-python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py morning
-python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py evening
+python3 ~/.openclaw/skills/daily-brief/daily_brief.py morning
+python3 ~/.openclaw/skills/daily-brief/daily_brief.py evening
 ```
 
 ---

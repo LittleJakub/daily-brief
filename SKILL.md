@@ -1,7 +1,7 @@
 # daily-brief
 
 **Version:** 1.2.0
-**Location:** `~/.openclaw/agents/main/workspace/skills/daily-brief/`
+**Location:** `~/.openclaw/skills/daily-brief/`
 
 ---
 
@@ -36,15 +36,15 @@
 ## Manual run
 
 ```bash
-python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py morning
-python3 ~/.openclaw/agents/main/workspace/skills/daily-brief/daily_brief.py evening
+python3 ~/.openclaw/skills/daily-brief/daily_brief.py morning
+python3 ~/.openclaw/skills/daily-brief/daily_brief.py evening
 ```
 
 ---
 
 ## Required secrets
 
-All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
+All in `~/.openclaw/.env`:
 
 | Variable | Description |
 |---|---|
@@ -86,11 +86,11 @@ All in `~/.openclaw/shared/secrets/openclaw-secrets.env`:
   },
   "life_ledger": {
     "enabled": true,
-    "path": "/home/USER/.openclaw/shared/life-ledger/ledger.json"
+    "path": "/home/USER/.openclaw/agents/main/workspace/life-ledger/ledger.json"
   },
   "pulse_board": {
     "enabled": true,
-    "last_delivered_path": "/home/USER/.openclaw/agents/main/workspace/skills/pulse-board/last-delivered.md"
+    "last_delivered_path": "/home/USER/.pulse-board/logs/last-delivered.md"
   },
   "alert_window_days": 7
 }
@@ -111,7 +111,7 @@ Feishu rejects `receive_id_type=thread_id` with a field validation error. The on
 To get the root message ID of a topic:
 
 ```bash
-source ~/.openclaw/shared/secrets/openclaw-secrets.env
+source ~/.openclaw/.env
 
 TOKEN=$(curl -s https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
   -H "Content-Type: application/json" \
@@ -142,7 +142,7 @@ Works with any calendar that provides an ICS URL. URLs stored in secrets, never 
 
 ## Logs
 
-`~/.openclaw/agents/main/workspace/skills/daily-brief/daily-brief.log`
+`~/.openclaw/skills/daily-brief/daily-brief.log`
 
 ---
 
