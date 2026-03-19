@@ -608,7 +608,12 @@ def rig_status_line(pulse_delivered_path: Path) -> str:
             if not line:
                 continue
             try:
-                ts    = datetime.fromisoformat(line[:19])
+                # Extract YYYY-MM-DD HH:MM from anywhere in the line
+                import re
+                m = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})', line)
+                if not m:
+                    continue
+                ts = datetime.strptime(m.group(1) + ' ' + m.group(2), '%Y-%m-%d %H:%M')
                 age_h = (datetime.now() - ts).total_seconds() / 3600
                 if age_h > 24:
                     return f"⚠️ <b>Rig:</b> last pulse {age_h:.0f}h ago — may need attention"
