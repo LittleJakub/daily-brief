@@ -108,7 +108,7 @@ def fetch_weather(cfg: dict, secrets: dict, target: str = "today") -> str:
 
     line = (
         f"{rain_icon} <b>{label} in {city}:</b> {desc}\n"
-        f"   🌡️ {t_min:.0f}°C – {t_max:.0f}°C  (feels {min(feels):.0f}–{max(feels):.0f}°C)"
+        f"   🌡️ {t_min:.0f}°C – {t_max:.0f}°C  (feels {min(feels):.0f}–{max(feels):.0f}°C)".replace("-0°", "0°").replace("-0–", "0–")
     )
     if pop >= 15:
         line += f"\n   🌧️ Rain chance: {pop:.0f}%"
@@ -158,11 +158,19 @@ def _parse_ics_datetime(val: str, tzid: Optional[str] = None) -> Optional[date]:
             return None
 
 def _parse_ics_datetime_full(val: str) -> Optional[datetime]:
-    """Parse to full datetime for time display."""
-    val = val.strip().rstrip("Z")
+    """Parse to full datetime for time display (always local time)."""
+    val = val.strip()
+    is_utc = val.endswith("Z")
+    val = val.rstrip("Z")
     if "T" in val:
         try:
-            return datetime.strptime(val[:15], "%Y%m%dT%H%M%S")
+            dt = datetime.strptime(val[:15], "%Y%m%dT%H%M%S")
+            if is_utc:
+                from datetime import timezone, timedelta
+                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.astimezone(timezone(timedelta(hours=8)))
+                dt = dt.replace(tzinfo=None)
+            return dt
         except ValueError:
             return None
     return None
@@ -311,6 +319,11 @@ def parse_ics(text: str, target_date: date) -> list:
             all_day  = _is_all_day(ev.get("dtstart_raw", ""))
             start_dt = None if all_day else ev.get("dtstart_dt")
             end_dt   = None if all_day else ev.get("dtend_dt")
+            # For recurring events, pin times to target_date so sort works
+            if start_dt and start_dt.date() != target_date:
+                start_dt = start_dt.replace(year=target_date.year, month=target_date.month, day=target_date.day)
+            if end_dt and end_dt.date() != target_date:
+                end_dt = end_dt.replace(year=target_date.year, month=target_date.month, day=target_date.day)
             result.append({
                 "summary":  ev.get("summary", "(no title)"),
                 "location": ev.get("location"),
@@ -489,7 +502,7 @@ def format_todoist_horizon(tasks: list, days: int) -> str:
         and not t["is_completed"]
     ]
     if not upcoming:
-        return f"📆 <b>Next {days} days:</b> Nothing on the horizon."
+        return f"📆 <b>Next {days} days (tasks):</b> Nothing on the horizon."
     lines = [f"📆 <b>Coming up ({days}-day view):</b>"]
     for t in upcoming[:8]:
         # %-d is Linux-specific (no leading zero). Fine for hiVe/Ubuntu.
