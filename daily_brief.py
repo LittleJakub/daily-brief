@@ -289,12 +289,26 @@ def parse_ics(text: str, target_date: date) -> list:
         elif prop_name == "EXDATE":
             exdate_vals = val.strip().split(",")
             current.setdefault("exdates", []).extend(exdate_vals)
+        elif prop_name == "RECURRENCE-ID":
+            current["recurrence_id"] = val.strip()
+        elif prop_name == "UID":
+            current["uid"] = val.strip()
         elif prop_name == "RRULE":
             current["rrule"] = val.strip()
         elif prop_name == "STATUS":
             current["status"] = val.strip().upper()
 
     # Filter to target_date
+    # Collect RECURRENCE-ID dates and add as exdates to parent recurring events
+    recurrence_overrides = {}  # uid -> list of override date strings
+    for ev in events:
+        rid = ev.get("recurrence_id")
+        if rid and ev.get("uid"):
+            recurrence_overrides.setdefault(ev["uid"], []).append(rid)
+    for ev in events:
+        if ev.get("rrule") and ev.get("uid") in recurrence_overrides:
+            ev.setdefault("exdates", []).extend(recurrence_overrides[ev["uid"]])
+
     result = []
     for ev in events:
         # Skip cancelled events
