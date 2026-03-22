@@ -286,6 +286,9 @@ def parse_ics(text: str, target_date: date) -> list:
         elif prop_name == "DTEND":
             current["dtend_date"] = _parse_ics_datetime(val, tzid)
             current["dtend_dt"]   = _parse_ics_datetime_full(val)
+        elif prop_name == "EXDATE":
+            exdate_vals = val.strip().split(",")
+            current.setdefault("exdates", []).extend(exdate_vals)
         elif prop_name == "RRULE":
             current["rrule"] = val.strip()
         elif prop_name == "STATUS":
@@ -315,6 +318,13 @@ def parse_ics(text: str, target_date: date) -> list:
         else:
             occurs = dtstart_d == target_date
 
+        # EXDATE check: skip cancelled occurrences of recurring events
+        if occurs and ev.get("exdates"):
+            check_str = target_date.strftime("%Y%m%d")
+            for exd in ev["exdates"]:
+                if check_str in exd:
+                    occurs = False
+                    break
         if occurs:
             all_day  = _is_all_day(ev.get("dtstart_raw", ""))
             start_dt = None if all_day else ev.get("dtstart_dt")
@@ -893,7 +903,7 @@ def evening_briefing(cfg: dict, secrets: dict) -> str:
     now       = datetime.now()
     date_str  = now.strftime("%A, %-d %B %Y")
     tomorrow  = date.today() + timedelta(days=1)
-    sections  = [f"🌆 <b>Evening briefing</b>\n{date_str}"]
+    sections  = [f"🌆 <b>Good evening!</b>\n{date_str}"]
 
     # Calendar — tomorrow
     # events hoisted so prep_reminders can use it even if format_calendar fails
